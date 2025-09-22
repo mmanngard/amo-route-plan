@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent
 # --- config: edit these values for quick tests ---
 START = (21.7070, 60.1916)   # (lon, lat)
 END   = (21.7877, 60.2272)   # (lon, lat)
-GRID_SPACING_M = 50.0   # meters; larger = fewer nodes/faster
+GRID_SPACING_M = 200.0   # meters; larger = fewer nodes/faster
 
 # Fairway multipliers - higher values make areas more expensive to traverse
 # Example: make some areas 2x more expensive (multiplier=2.0) or half as expensive (multiplier=0.5)

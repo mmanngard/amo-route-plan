@@ -405,6 +405,9 @@ class Visualization:
         # Add grid layer if requested
         if show_grid:
             self._add_grid_layer(m)
+        else:
+            # Always add grid points as small dots in their own layer
+            self._add_grid_points_layer(m)
 
         # Add layer control
         folium.LayerControl().add_to(m)
@@ -513,6 +516,40 @@ class Visualization:
 
         grid_layer.add_to(map_obj)
 
+    def _add_grid_points_layer(self, map_obj) -> None:
+        """Add grid points as small dots to the map."""
+        import folium
+        from pyproj import Transformer
+        
+        transformer = Transformer.from_crs(
+            self.fairway.METRIC_CRS, 
+            self.fairway.SRC_CRS, 
+            always_xy=True
+        )
+        
+        # Convert all grid points to lon/lat
+        grid_lonlat = []
+        for (x, y) in self.fairway.xy_m.values():
+            lon, lat = transformer.transform(x, y)
+            grid_lonlat.append((lon, lat))
+        
+        # Create grid points layer
+        grid_points_layer = folium.FeatureGroup(name=f"Grid Points ({len(grid_lonlat)})", show=False)
+        
+        # Add each grid point as a small circle marker
+        for lon, lat in grid_lonlat:
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=1,  # Very small radius
+                color="blue",
+                fill=True,
+                fill_opacity=0.6,
+                weight=0,  # No border
+                popup=f"Grid Point<br>Lon: {lon:.6f}<br>Lat: {lat:.6f}"
+            ).add_to(grid_points_layer)
+        
+        grid_points_layer.add_to(map_obj)
+
     def _add_legend(self, map_obj) -> None:
         """Add a legend explaining the fairway color coding."""
         import folium
@@ -520,13 +557,16 @@ class Visualization:
         # Create legend HTML
         legend_html = '''
         <div style="position: fixed; 
-                    bottom: 50px; left: 50px; width: 200px; height: 120px; 
+                    bottom: 50px; left: 50px; width: 220px; height: 160px; 
                     background-color: white; border:2px solid grey; z-index:9999; 
                     font-size:14px; padding: 10px">
         <p><b>Fairway Multipliers</b></p>
         <p><i class="fa fa-square" style="color:green"></i> < 1.0 (Preferred)</p>
         <p><i class="fa fa-square" style="color:blue"></i> = 1.0 (Normal)</p>
         <p><i class="fa fa-square" style="color:red"></i> > 1.0 (Avoided)</p>
+        <p><b>Layers:</b></p>
+        <p><i class="fa fa-circle" style="color:blue; font-size:8px"></i> Grid Points</p>
+        <p><i class="fa fa-line" style="color:red"></i> Route</p>
         </div>
         '''
         
