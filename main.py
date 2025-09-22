@@ -7,10 +7,21 @@ from src.route_planner import Fairway, RoutePlan, Visualization
 # ensure we can import from src/
 ROOT = Path(__file__).resolve().parent
 
-# --- config: edit these three values for quick tests ---
+# --- config: edit these values for quick tests ---
 START = (21.7070, 60.1916)   # (lon, lat)
 END   = (21.7877, 60.2272)   # (lon, lat)
 GRID_SPACING_M = 50.0   # meters; larger = fewer nodes/faster
+
+# Fairway multipliers - higher values make areas more expensive to traverse
+# Example: make some areas 2x more expensive (multiplier=2.0) or half as expensive (multiplier=0.5)
+FAIRWAY_MULTIPLIERS = {
+    111930: 1.0,  # Normal cost
+    111938: 99.0,  # 2x more expensive
+    111930: 99.0,
+    246342: 99.0,
+    246318: 0.5,  # Half cost (preferred)
+    # Add more fairway IDs and multipliers as needed
+}
 
 DATA_DIR = ROOT / "data"
 FAIRWAY_FILE = DATA_DIR / "fairway.geojson"
@@ -22,12 +33,18 @@ def main():
     if not FAIRWAY_FILE.exists():
         raise SystemExit(f"Missing fairway file: {FAIRWAY_FILE}")
 
-    # Create Fairway instance and build grid
-    fairway = Fairway(FAIRWAY_FILE, spacing_m=GRID_SPACING_M, connectivity=8)
+    # Create Fairway instance with multipliers and build grid
+    fairway = Fairway(FAIRWAY_FILE, spacing_m=GRID_SPACING_M, connectivity=8, 
+                     fairway_multipliers=FAIRWAY_MULTIPLIERS)
     
     stats = fairway.get_stats()
     print(f"Grid built → nodes: {stats['nodes']:,}, edges: {stats['edges']:,} "
           f"(spacing={stats['spacing_m']:g} m)")
+    
+    if FAIRWAY_MULTIPLIERS:
+        print(f"Using fairway multipliers: {FAIRWAY_MULTIPLIERS}")
+    else:
+        print("No fairway multipliers set - using uniform costs")
 
     if stats['nodes'] == 0:
         raise SystemExit("No navigable grid nodes were created. Increase spacing or check fairway geometry.")

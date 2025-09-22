@@ -13,7 +13,7 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 from shapely.strtree import STRtree
 from pyproj import Transformer
-
+from pydantic import BaseModel, Field
 
 @dataclass(frozen=True)
 class GridSpec:
@@ -32,6 +32,10 @@ class GridSpec:
         else:
             raise ValueError("connectivity must be 4 or 8")
 
+class FairwayWeights(BaseModel):
+    id: int = Field(description="The ID of the fairway")
+    multiplier: float = Field(description="The distance multiplier for this fairway area")
+
 
 class Fairway:
     """Main class for managing fairway data, grid generation, and routing operations."""
@@ -40,7 +44,8 @@ class Fairway:
     SRC_CRS = "EPSG:4326"   # GeoJSON lon/lat
     METRIC_CRS = "EPSG:3857"  # Web Mercator (meters)
     
-    def __init__(self, fairway_path: Path, spacing_m: float = 200.0, connectivity: int = 8):
+    def __init__(self, fairway_path: Path, spacing_m: float = 200.0, connectivity: int = 8, 
+                 fairway_multipliers: Dict[int, float] = None):
         """
         Initialize a Fairway instance.
         
@@ -48,24 +53,45 @@ class Fairway:
             fairway_path: Path to the GeoJSON fairway file
             spacing_m: Grid spacing in meters
             connectivity: Grid connectivity (4 or 8)
+            fairway_multipliers: Dict mapping fairway ID to distance multiplier
         """
         self.fairway_path = fairway_path
-        self.fairway_ll = self._load_fairway()
+        self.fairway_multipliers = fairway_multipliers or {}
+        self.fairway_features = self._load_fairway_features()
+        self.fairway_ll = self._create_fairway_geometry()
         self.fairway_m = self._project_geom(self.fairway_ll, self.SRC_CRS, self.METRIC_CRS)
         self.grid = GridSpec(spacing_m=spacing_m, connectivity=connectivity)
         self.G, self.xy_m = self._get_grid_graph(self.fairway_m, self.grid)
 
-    def _load_fairway(self) -> MultiPolygon:
-        """Read polygons from a GeoJSON file (CRS: EPSG:4326)."""
+    def _load_fairway_features(self) -> list[dict]:
+        """Load fairway features from GeoJSON file."""
         gj = json.loads(self.fairway_path.read_text(encoding="utf-8"))
-        polys = []
+        features = []
         for f in gj.get("features", []):
             geom = shape(f["geometry"])  # shapely geometry in lon/lat
             if isinstance(geom, (Polygon, MultiPolygon)):
-                polys.append(geom)
-        if not polys:
+                features.append({
+                    "geometry": geom,
+                    "properties": f.get("properties", {}),
+                    "id": f.get("properties", {}).get("id")
+                })
+        if not features:
             raise ValueError("No Polygon/MultiPolygon features found in GeoJSON.")
+        return features
+    
+    def _create_fairway_geometry(self) -> MultiPolygon:
+        """Create unified fairway geometry from features."""
+        polys = [f["geometry"] for f in self.fairway_features]
         return unary_union(polys)  # MultiPolygon or Polygon
+    
+    def get_fairway_multiplier(self, point: Point) -> float:
+        """Get the multiplier for a point based on which fairway area it's in."""
+        for feature in self.fairway_features:
+            if feature["geometry"].contains(point) or feature["geometry"].touches(point):
+                fairway_id = feature["properties"].get("id")
+                if fairway_id in self.fairway_multipliers:
+                    return self.fairway_multipliers[fairway_id]
+        return 1.0  # Default multiplier if not in any fairway area
 
     def _project_geom(self, geom: BaseGeometry, src: str, dst: str) -> BaseGeometry:
         """Project a shapely geometry between CRSs."""
@@ -138,6 +164,18 @@ class Fairway:
                 if nb in xy and not G.has_edge((i, j), nb):
                     # Euclidean distance in meters based on spacing and multiplier
                     dist = grid.spacing_m * mult
+                    
+                    # Apply fairway area multiplier
+                    if self.fairway_multipliers:
+                        # Get multiplier for the midpoint of the edge
+                        mid_x, mid_y = (x + xy[nb][0]) / 2, (y + xy[nb][1]) / 2
+                        # Project back to lon/lat for multiplier lookup
+                        to_ll = Transformer.from_crs(self.METRIC_CRS, self.SRC_CRS, always_xy=True).transform
+                        mid_lon, mid_lat = to_ll(mid_x, mid_y)
+                        ll_point = Point(mid_lon, mid_lat)
+                        area_multiplier = self.get_fairway_multiplier(ll_point)
+                        dist *= area_multiplier
+                    
                     G.add_edge((i, j), nb, weight=dist)
 
         return G, xy
@@ -185,6 +223,18 @@ class Fairway:
             "spacing_m": self.grid.spacing_m,
             "connectivity": self.grid.connectivity
         }
+    
+    def set_fairway_multiplier(self, fairway_id: int, multiplier: float) -> None:
+        """Set a distance multiplier for a specific fairway area."""
+        self.fairway_multipliers[fairway_id] = multiplier
+        print(f"Set multiplier for fairway {fairway_id}: {multiplier}")
+    
+    def rebuild_grid_with_multipliers(self) -> None:
+        """Rebuild the grid graph with current multiplier settings."""
+        print("Rebuilding grid with current multipliers...")
+        self.G, self.xy_m = self._get_grid_graph(self.fairway_m, self.grid)
+        print(f"Grid rebuilt: {self.G.number_of_nodes()} nodes, {self.G.number_of_edges()} edges")
+    
 
 
 class RoutePlan:
@@ -358,19 +408,71 @@ class Visualization:
 
         # Add layer control
         folium.LayerControl().add_to(m)
+        
+        # Add legend
+        self._add_legend(m)
 
         # Save map
         m.save(output_path)
 
     def _add_fairways_layer(self, map_obj) -> None:
-        """Add fairways as a GeoJSON layer to the map."""
+        """Add fairways as a GeoJSON layer to the map with color coding based on multipliers."""
         import folium
         import json
         
-        fairways_layer = folium.FeatureGroup(name="Fairways", show=True)
-        fairways_layer.add_child(folium.GeoJson(
-            json.load(open(self.fairway_file, encoding="utf-8"))
-        ))
+        fairways_layer = folium.FeatureGroup(name="Fairways (by multiplier)", show=True)
+        
+        # Load fairway data
+        with open(self.fairway_file, encoding="utf-8") as f:
+            fairway_data = json.load(f)
+        
+        # Color function based on multiplier
+        def get_fairway_color(feature):
+            fairway_id = feature.get("properties", {}).get("id")
+            multiplier = self.fairway.fairway_multipliers.get(fairway_id, 1.0)
+            
+            if multiplier < 1.0:
+                return "green"  # Preferred areas (cheaper)
+            elif multiplier == 1.0:
+                return "blue"   # Normal areas
+            else:
+                return "red"    # Avoided areas (more expensive)
+        
+        # Style function for fairways
+        def style_function(feature):
+            color = get_fairway_color(feature)
+            fairway_id = feature.get("properties", {}).get("id")
+            multiplier = self.fairway.fairway_multipliers.get(fairway_id, 1.0)
+            
+            return {
+                "fillColor": color,
+                "color": color,
+                "weight": 2,
+                "fillOpacity": 0.3,
+                "opacity": 0.8
+            }
+        
+        # Add each fairway with individual styling
+        for feature in fairway_data.get("features", []):
+            fairway_id = feature.get("properties", {}).get("id")
+            multiplier = self.fairway.fairway_multipliers.get(fairway_id, 1.0)
+            
+            # Create popup text
+            popup_text = f"Fairway ID: {fairway_id}<br>Multiplier: {multiplier}"
+            if multiplier < 1.0:
+                popup_text += "<br>Status: Preferred (green)"
+            elif multiplier == 1.0:
+                popup_text += "<br>Status: Normal (blue)"
+            else:
+                popup_text += "<br>Status: Avoided (red)"
+            
+            # Add individual fairway
+            folium.GeoJson(
+                feature,
+                style_function=style_function,
+                popup=folium.Popup(popup_text, parse_html=True)
+            ).add_to(fairways_layer)
+        
         fairways_layer.add_to(map_obj)
 
     def _add_route_layer(self, map_obj) -> None:
@@ -410,6 +512,25 @@ class Visualization:
             ).add_to(grid_layer)
 
         grid_layer.add_to(map_obj)
+
+    def _add_legend(self, map_obj) -> None:
+        """Add a legend explaining the fairway color coding."""
+        import folium
+        
+        # Create legend HTML
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 50px; left: 50px; width: 200px; height: 120px; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:14px; padding: 10px">
+        <p><b>Fairway Multipliers</b></p>
+        <p><i class="fa fa-square" style="color:green"></i> < 1.0 (Preferred)</p>
+        <p><i class="fa fa-square" style="color:blue"></i> = 1.0 (Normal)</p>
+        <p><i class="fa fa-square" style="color:red"></i> > 1.0 (Avoided)</p>
+        </div>
+        '''
+        
+        map_obj.get_root().html.add_child(folium.Element(legend_html))
 
     def create_simple_map(self, start_coords: tuple[float, float], end_coords: tuple[float, float], 
                          output_path: Path) -> None:
