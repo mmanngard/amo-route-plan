@@ -88,7 +88,7 @@ class Fairway:
 
     def _get_grid_graph(
         self, fairway_m: BaseGeometry, grid: GridSpec
-    ) -> Tuple[nx.Graph, Dict[Tuple[int, int], Tuple[float, float]]]:
+) -> Tuple[nx.Graph, Dict[Tuple[int, int], Tuple[float, float]]]:
         """
         Discretize the fairway polygon(s) in metric coordinates (meters) into a grid graph.
         Returns:
@@ -147,41 +147,6 @@ class Fairway:
         to_ll = Transformer.from_crs(self.METRIC_CRS, self.SRC_CRS, always_xy=True).transform
         return {k: to_ll(x, y) for k, (x, y) in xy_m.items()}
 
-    def _nearest_node_xy(self, x: float, y: float):
-        """Find nearest grid node in projected (meter) coords."""
-        # Simple linear scan; for large graphs you could build a KDTree
-        best = None
-        best_d2 = float("inf")
-        for n, (nxm, nym) in self.xy_m.items():
-            d2 = (nxm - x) ** 2 + (nym - y) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best = n
-        return best
-
-    def shortest_path_between(
-        self, start_lon: float, start_lat: float, end_lon: float, end_lat: float
-    ) -> Tuple[Iterable[Tuple[int, int]], float]:
-        """Compute a shortest path in meters between two lon/lat points snapped to the nearest grid nodes."""
-        fwd = Transformer.from_crs(self.SRC_CRS, self.METRIC_CRS, always_xy=True).transform
-        s_x, s_y = fwd(start_lon, start_lat)
-        t_x, t_y = fwd(end_lon, end_lat)
-
-        s = self._nearest_node_xy(s_x, s_y)
-        t = self._nearest_node_xy(t_x, t_y)
-        if s is None or t is None:
-            raise RuntimeError("Could not snap start/end to the navigable grid. Are they inside the fairway?")
-
-        # A* with Euclidean heuristic in meters
-        def h(u, v):
-            ux, uy = self.xy_m[u]
-            vx, vy = self.xy_m[v]
-            return ((ux - vx) ** 2 + (uy - vy) ** 2) ** 0.5
-
-        path = nx.astar_path(self.G, s, t, heuristic=h, weight="weight")
-        length = nx.path_weight(self.G, path, weight="weight")
-        return path, length
-
     def path_to_geojson(self, path: Iterable[Tuple[int, int]], out_path: Path) -> None:
         """Write a path (sequence of grid nodes) to a GeoJSON LineString in lon/lat."""
         to_ll = Transformer.from_crs(self.METRIC_CRS, self.SRC_CRS, always_xy=True).transform
@@ -234,6 +199,41 @@ class RoutePlan:
         """
         self.fairway = fairway
 
+    def _nearest_node_xy(self, x: float, y: float):
+        """Find nearest grid node in projected (meter) coords."""
+        # Simple linear scan; for large graphs you could build a KDTree
+        best = None
+        best_d2 = float("inf")
+        for n, (nxm, nym) in self.fairway.xy_m.items():
+            d2 = (nxm - x) ** 2 + (nym - y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = n
+        return best
+
+    def shortest_path_between(
+            self, start_lon: float, start_lat: float, end_lon: float, end_lat: float
+    ) -> Tuple[Iterable[Tuple[int, int]], float]:
+        """Compute a shortest path in meters between two lon/lat points snapped to the nearest grid nodes."""
+        fwd = Transformer.from_crs(self.fairway.SRC_CRS, self.fairway.METRIC_CRS, always_xy=True).transform
+        s_x, s_y = fwd(start_lon, start_lat)
+        t_x, t_y = fwd(end_lon, end_lat)
+
+        s = self._nearest_node_xy(s_x, s_y)
+        t = self._nearest_node_xy(t_x, t_y)
+        if s is None or t is None:
+            raise RuntimeError("Could not snap start/end to the navigable grid. Are they inside the fairway?")
+
+        # A* with Euclidean heuristic in meters
+        def h(u, v):
+            ux, uy = self.fairway.xy_m[u]
+            vx, vy = self.fairway.xy_m[v]
+            return ((ux - vx) ** 2 + (uy - vy) ** 2) ** 0.5
+
+        path = nx.astar_path(self.fairway.G, s, t, heuristic=h, weight="weight")
+        length = nx.path_weight(self.fairway.G, path, weight="weight")
+        return path, length
+
     def find_route(self, start_lon: float, start_lat: float, end_lon: float, end_lat: float) -> tuple[list[tuple[int, int]], float]:
         """
         Find the shortest route between two coordinates.
@@ -247,7 +247,7 @@ class RoutePlan:
         Returns:
             Tuple of (path, length_m) where path is list of grid nodes and length_m is distance in meters
         """
-        path, length_m = self.fairway.shortest_path_between(start_lon, start_lat, end_lon, end_lat)
+        path, length_m = self.shortest_path_between(start_lon, start_lat, end_lon, end_lat)
         return list(path), length_m
 
     def export_route_geojson(self, path: list[tuple[int, int]], output_path: Path) -> None:
@@ -268,7 +268,7 @@ class RoutePlan:
         return self.fairway.path_coords_lonlat(path)
 
     def plan_and_export(self, start_coords: tuple[float, float], end_coords: tuple[float, float], 
-                       geojson_path: Path, csv_path: Path) -> tuple[list[tuple[int, int]], float]:
+                    geojson_path: Path, csv_path: Path) -> tuple[list[tuple[int, int]], float]:
         """
         Plan route and export to both GeoJSON and CSV formats.
         
@@ -292,7 +292,6 @@ class RoutePlan:
         self.export_route_csv(path, csv_path)
         
         return path, length_m
-
 
 class Visualization:
     """Handles all visualization-related functionality for fairway routing."""
