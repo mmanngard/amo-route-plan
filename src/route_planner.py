@@ -392,9 +392,12 @@ class Visualization:
         # Set up map centered between start and end
         m = folium.Map(
             location=[(s_lat + e_lat) / 2, (s_lon + e_lon) / 2],
-            zoom_start=11, 
+            zoom_start=12,  # Increased zoom to make markers more visible
             tiles="OpenStreetMap"
         )
+
+        # Add start and end markers (top layer)
+        self._add_start_end_markers(m, start_coords, end_coords)
 
         # Add fairways layer
         self._add_fairways_layer(m)
@@ -550,6 +553,44 @@ class Visualization:
         
         grid_points_layer.add_to(map_obj)
 
+    def _add_start_end_markers(self, map_obj, start_coords: tuple[float, float], end_coords: tuple[float, float]) -> None:
+        """Add start and end markers to the map on separate layers."""
+        import folium
+        
+        s_lon, s_lat = start_coords
+        e_lon, e_lat = end_coords
+        
+        # Create markers layer (start and end together)
+        markers_layer = folium.FeatureGroup(name="Markers", show=True)
+        
+        # Add start marker
+        start_circle = folium.CircleMarker(
+            [s_lat, s_lon],
+            radius=10,
+            color="green",
+            fill=True,
+            fillColor="green",
+            fillOpacity=0.8,
+            popup=f"Start<br>Lon: {s_lon:.6f}<br>Lat: {s_lat:.6f}",
+            tooltip="Start Point"
+        )
+        markers_layer.add_child(start_circle)
+        
+        # Add end marker
+        end_circle = folium.CircleMarker(
+            [e_lat, e_lon],
+            radius=10,
+            color="red",
+            fill=True,
+            fillColor="red",
+            fillOpacity=0.8,
+            popup=f"End<br>Lon: {e_lon:.6f}<br>Lat: {e_lat:.6f}",
+            tooltip="End Point"
+        )
+        markers_layer.add_child(end_circle)
+        
+        markers_layer.add_to(map_obj)
+
     def _add_legend(self, map_obj) -> None:
         """Add a legend explaining the fairway color coding."""
         import folium
@@ -557,16 +598,13 @@ class Visualization:
         # Create legend HTML
         legend_html = '''
         <div style="position: fixed; 
-                    bottom: 50px; left: 50px; width: 220px; height: 160px; 
+                    bottom: 50px; left: 50px; width: 200px; height: 120px; 
                     background-color: white; border:2px solid grey; z-index:9999; 
                     font-size:14px; padding: 10px">
         <p><b>Fairway Multipliers</b></p>
         <p><i class="fa fa-square" style="color:green"></i> < 1.0 (Preferred)</p>
         <p><i class="fa fa-square" style="color:blue"></i> = 1.0 (Normal)</p>
         <p><i class="fa fa-square" style="color:red"></i> > 1.0 (Avoided)</p>
-        <p><b>Layers:</b></p>
-        <p><i class="fa fa-circle" style="color:blue; font-size:8px"></i> Grid Points</p>
-        <p><i class="fa fa-line" style="color:red"></i> Route</p>
         </div>
         '''
         
